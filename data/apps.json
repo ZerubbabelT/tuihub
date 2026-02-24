@@ -1,0 +1,202 @@
+[
+  {
+    "id": "lazygit",
+    "name": "lazygit",
+    "description": "Simple terminal UI for git commands",
+    "category": "git",
+    "repo": "https://github.com/jesseduffield/lazygit",
+    "binary": "lazygit",
+    "install": {
+      "linux": "sudo apt install lazygit",
+      "wsl": "sudo apt install lazygit",
+      "mac": "brew install lazygit",
+      "windows": "winget install JesseDuffield.lazygit"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove lazygit",
+      "wsl": "sudo apt remove lazygit",
+      "mac": "brew uninstall lazygit",
+      "windows": "winget uninstall JesseDuffield.lazygit"
+    }
+  },
+  {
+    "id": "btop",
+    "name": "btop",
+    "description": "Resource monitor and system stats in terminal",
+    "category": "system",
+    "repo": "https://github.com/aristocratos/btop",
+    "binary": "btop",
+    "install": {
+      "linux": "sudo apt install btop",
+      "wsl": "sudo apt install btop",
+      "mac": "brew install btop",
+      "windows": "winget install btop"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove btop",
+      "wsl": "sudo apt remove btop",
+      "mac": "brew uninstall btop",
+      "windows": "winget uninstall btop"
+    }
+  },
+  {
+    "id": "yazi",
+    "name": "yazi",
+    "description": "Blazing fast terminal file manager",
+    "category": "file-manager",
+    "repo": "https://github.com/elkowar/yazi",
+    "binary": "yazi",
+    "install": {
+      "linux": "sudo apt install yazi",
+      "wsl": "sudo apt install yazi",
+      "mac": "brew install yazi",
+      "windows": "winget install yazi"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove yazi",
+      "wsl": "sudo apt remove yazi",
+      "mac": "brew uninstall yazi",
+      "windows": "winget uninstall yazi"
+    }
+  },
+  {
+    "id": "lazydocker",
+    "name": "lazydocker",
+    "description": "Terminal UI for managing Docker containers",
+    "category": "containers",
+    "repo": "https://github.com/jesseduffield/lazydocker",
+    "binary": "lazydocker",
+    "install": {
+      "linux": "sudo apt install lazydocker",
+      "wsl": "sudo apt install lazydocker",
+      "mac": "brew install lazydocker",
+      "windows": "winget install lazydocker"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove lazydocker",
+      "wsl": "sudo apt remove lazydocker",
+      "mac": "brew uninstall lazydocker",
+      "windows": "winget uninstall lazydocker"
+    }
+  },
+  {
+    "id": "k9s",
+    "name": "k9s",
+    "description": "Kubernetes CLI and TUI for cluster management",
+    "category": "kubernetes",
+    "repo": "https://github.com/derailed/k9s",
+    "binary": "k9s",
+    "install": {
+      "linux": "sudo apt install k9s",
+      "wsl": "sudo apt install k9s",
+      "mac": "brew install k9s",
+      "windows": "winget install k9s"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove k9s",
+      "wsl": "sudo apt remove k9s",
+      "mac": "brew uninstall k9s",
+      "windows": "winget uninstall k9s"
+    }
+  },
+  {
+    "id": "neovim",
+    "name": "Neovim",
+    "description": "Modern terminal-based text editor",
+    "category": "editor",
+    "repo": "https://github.com/neovim/neovim",
+    "binary": "nvim",
+    "install": {
+      "linux": "sudo apt install neovim",
+      "wsl": "sudo apt install neovim",
+      "mac": "brew install neovim",
+      "windows": "winget install Neovim.Neovim"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove neovim",
+      "wsl": "sudo apt remove neovim",
+      "mac": "brew uninstall neovim",
+      "windows": "winget uninstall Neovim.Neovim"
+    }
+  },
+  {
+    "id": "ranger",
+    "name": "ranger",
+    "description": "VIM-inspired terminal file manager",
+    "category": "file-manager",
+    "repo": "https://github.com/ranger/ranger",
+    "binary": "ranger",
+    "install": {
+      "linux": "sudo apt install ranger",
+      "wsl": "sudo apt install ranger",
+      "mac": "brew install ranger",
+      "windows": "winget install ranger"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove ranger",
+      "wsl": "sudo apt remove ranger",
+      "mac": "brew uninstall ranger",
+      "windows": "winget uninstall ranger"
+    }
+  },
+  {
+    "id": "htop",
+    "name": "htop",
+    "description": "Interactive process viewer for terminals",
+    "category": "system",
+    "repo": "https://github.com/htop-dev/htop",
+    "binary": "htop",
+    "install": {
+      "linux": "sudo apt install htop",
+      "wsl": "sudo apt install htop",
+      "mac": "brew install htop",
+      "windows": "winget install htop"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove htop",
+      "wsl": "sudo apt remove htop",
+      "mac": "brew uninstall htop",
+      "windows": "winget uninstall htop"
+    }
+  },
+  {
+    "id": "spotify-tui",
+    "name": "spotify-tui",
+    "description": "Spotify client in the terminal",
+    "category": "media",
+    "repo": "https://github.com/Rigellute/spotify-tui",
+    "binary": "spt",
+    "install": {
+      "linux": "sudo apt install spotify-tui",
+      "wsl": "sudo apt install spotify-tui",
+      "mac": "brew install spotify-tui",
+      "windows": "winget install spotify-tui"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove spotify-tui",
+      "wsl": "sudo apt remove spotify-tui",
+      "mac": "brew uninstall spotify-tui",
+      "windows": "winget uninstall spotify-tui"
+    }
+  },
+  {
+    "id": "newsboat",
+    "name": "newsboat",
+    "description": "RSS/Atom feed reader for text terminals",
+    "category": "feeds",
+    "repo": "https://github.com/newsboat/newsboat",
+    "binary": "newsboat",
+    "install": {
+      "linux": "sudo apt install newsboat",
+      "wsl": "sudo apt install newsboat",
+      "mac": "brew install newsboat",
+      "windows": "winget install newsboat"
+    },
+    "uninstall": {
+      "linux": "sudo apt remove newsboat",
+      "wsl": "sudo apt remove newsboat",
+      "mac": "brew uninstall newsboat",
+      "windows": "winget uninstall newsboat"
+    }
+  }
+]
