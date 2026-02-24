@@ -31,7 +31,9 @@ cargo run
 - `Left` / `Right`: cycle category sub-tabs (when `Categories` tab is active)
 - `Up/Down` or `j/k`: move list cursor
 - `Space`: select/deselect app
+- `c`: clear all selected apps
 - `/`: open search input
+- `Esc`: clear search filter (outside search mode)
 - `I`: install selected apps (or current row if none selected)
 - `U`: uninstall selected apps (or current row if none selected)
 - `L`: launch selected apps in tmux (or current row if none selected)

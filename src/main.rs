@@ -83,6 +83,7 @@ fn is_wsl() -> bool {
 
 struct App {
     entries: Vec<AppEntry>,
+    installed_ids: HashSet<String>,
     selected_tab: usize,
     categories: Vec<String>,
     selected_category: usize,
@@ -109,6 +110,7 @@ impl App {
 
         let mut app = Self {
             entries,
+            installed_ids: HashSet::new(),
             selected_tab: 0,
             categories,
             selected_category: 0,
@@ -117,11 +119,25 @@ impl App {
             selected_ids: HashSet::new(),
             search_mode: false,
             search_input: String::new(),
-            status: "Ready. Use arrows/jk to navigate, Space to select, I install, L launch, / search.".to_string(),
+            status: "Ready. Navigate with arrows/jk. Space select, I install, L launch, / search.".to_string(),
             platform: Platform::detect(),
         };
+        app.refresh_installed_cache();
         app.refresh_filter();
         app
+    }
+
+    fn refresh_installed_cache(&mut self) {
+        self.installed_ids = self
+            .entries
+            .iter()
+            .filter(|entry| is_binary_installed(&entry.binary))
+            .map(|entry| entry.id.clone())
+            .collect();
+    }
+
+    fn is_installed(&self, entry: &AppEntry) -> bool {
+        self.installed_ids.contains(&entry.id)
     }
 
     fn refresh_filter(&mut self) {
@@ -145,7 +161,7 @@ impl App {
     fn matches_tab(&self, entry: &AppEntry) -> bool {
         match self.selected_tab {
             0 => true,
-            1 => is_installed(entry),
+            1 => self.is_installed(entry),
             2 => self
                 .categories
                 .get(self.selected_category)
@@ -264,6 +280,10 @@ impl App {
     fn set_status<S: Into<String>>(&mut self, message: S) {
         self.status = message.into();
     }
+
+    fn clear_selection(&mut self) {
+        self.selected_ids.clear();
+    }
 }
 
 fn command_for_platform(commands: &InstallCommands, platform: Platform) -> &str {
@@ -282,8 +302,35 @@ fn shell_for_platform(platform: Platform) -> (&'static str, &'static str) {
     }
 }
 
-fn is_installed(entry: &AppEntry) -> bool {
-    which(&entry.binary).is_ok()
+fn is_binary_installed(binary: &str) -> bool {
+    which(binary).is_ok()
+}
+
+fn platform_label(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Linux => "Linux",
+        Platform::Wsl => "WSL",
+        Platform::Mac => "macOS",
+        Platform::Windows => "Windows",
+    }
+}
+
+fn truncate_with_ellipsis(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() <= max_chars {
+        return input.to_string();
+    }
+    if max_chars == 1 {
+        return ".".to_string();
+    }
+
+    let mut out = chars[..max_chars - 1].iter().collect::<String>();
+    out.push('…');
+    out
 }
 
 fn load_entries(path: impl AsRef<Path>) -> Result<Vec<AppEntry>> {
@@ -338,40 +385,44 @@ fn launch_in_tmux(entry: &AppEntry) -> Result<String> {
 }
 
 fn ui(frame: &mut Frame<'_>, app: &mut App) {
+    let c_bg = Color::Rgb(15, 20, 28);
+    let c_panel = Color::Rgb(28, 38, 52);
+    let c_muted = Color::Rgb(130, 144, 164);
+    let c_text = Color::Rgb(226, 234, 244);
+    let c_primary = Color::Rgb(111, 201, 255);
+    let c_success = Color::Rgb(112, 220, 142);
+    let c_warning = Color::Rgb(255, 210, 110);
+
+    frame.render_widget(Block::default().style(Style::default().bg(c_bg)), frame.area());
+
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Length(if app.selected_tab == 2 { 3 } else { 0 }),
             Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(8),
-            Constraint::Length(2),
-            Constraint::Length(2),
+            Constraint::Min(10),
+            Constraint::Length(4),
         ])
         .split(frame.area());
 
-    let tab_titles = TABS
-        .iter()
-        .map(|title| Line::from(*title).centered())
-        .collect::<Vec<_>>();
-
+    let tab_titles = TABS.iter().map(|title| Line::from(*title)).collect::<Vec<_>>();
     let tabs = Tabs::new(tab_titles)
         .select(app.selected_tab)
         .block(
             Block::default()
                 .title(" TUIHub ")
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(c_panel)),
         )
-        .style(Style::default().fg(Color::Gray))
+        .style(Style::default().fg(c_muted))
         .highlight_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(c_primary)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        );
-
+        )
+        .divider(" | ");
     frame.render_widget(tabs, vertical[0]);
 
     if app.selected_tab == 2 {
@@ -384,118 +435,245 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
             .select(app.selected_category)
             .block(
                 Block::default()
-                    .title(" Categories ")
+                    .title(" Category Filter ")
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded),
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(c_panel)),
             )
-            .style(Style::default().fg(Color::Gray))
-            .highlight_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+            .style(Style::default().fg(c_muted))
+            .highlight_style(Style::default().fg(c_success).add_modifier(Modifier::BOLD))
+            .divider(" | ");
         frame.render_widget(cat_tabs, vertical[1]);
     }
 
     let search_title = if app.search_mode {
-        " Search (/): typing... Enter to apply, Esc to cancel "
+        " Search mode (/): typing... Enter apply, Esc close "
     } else {
-        " Search (/ to start) "
+        " Search (/ to start, Esc clear) "
     };
 
-    let search = Paragraph::new(app.search_input.as_str())
+    let search_text = if app.search_input.is_empty() {
+        "Type to filter by name, id, category, description".to_string()
+    } else {
+        app.search_input.clone()
+    };
+    let search = Paragraph::new(search_text)
         .block(
             Block::default()
                 .title(search_title)
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(if app.search_mode { c_primary } else { c_panel })),
         )
         .style(if app.search_mode {
-            Style::default().fg(Color::White)
+            Style::default().fg(c_text)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(c_muted)
         });
 
     frame.render_widget(search, vertical[2]);
 
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(vertical[3]);
+
+    let catalog_block = Block::default()
+        .title(" Catalog ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(c_panel))
+        .style(Style::default().bg(c_bg));
+    let catalog_inner = catalog_block.inner(body[0]);
+    frame.render_widget(catalog_block, body[0]);
+
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(4)])
+        .split(catalog_inner);
+
+    let header_line = Paragraph::new("Sel  Name                 Category        State       Description")
+        .style(Style::default().fg(c_muted).add_modifier(Modifier::BOLD));
+    frame.render_widget(header_line, left_chunks[0]);
+
+    let list_width = left_chunks[1].width as usize;
+    let desc_width = if list_width > 58 { list_width - 58 } else { 12 };
     let items: Vec<ListItem> = app
         .filtered_indices
         .iter()
         .filter_map(|idx| app.entries.get(*idx))
         .map(|entry| {
-            let installed = is_installed(entry);
+            let installed = app.is_installed(entry);
             let selected = app.selected_ids.contains(&entry.id);
             let checkbox = if selected { "[x]" } else { "[ ]" };
-            let install_badge = if installed {
-                "installed"
-            } else {
-                "not-installed"
-            };
+            let install_badge = if installed { "installed" } else { "available" };
+            let display_name = truncate_with_ellipsis(&entry.name, 20);
+            let display_category = truncate_with_ellipsis(&entry.category, 14);
+            let display_desc = truncate_with_ellipsis(&entry.description, desc_width);
 
-            let line = format!(
-                "{checkbox} {:<14} {:<14} {:<14} {}",
-                entry.name, entry.category, install_badge, entry.description
-            );
+            let line = Line::from(vec![
+                Span::styled(format!("{:<4}", checkbox), Style::default().fg(c_primary)),
+                Span::styled(format!("{:<21}", display_name), Style::default().fg(c_text)),
+                Span::styled(format!("{:<16}", display_category), Style::default().fg(c_muted)),
+                Span::styled(
+                    format!("{:<11}", install_badge),
+                    Style::default().fg(if installed { c_success } else { c_warning }),
+                ),
+                Span::styled(display_desc, Style::default().fg(c_text)),
+            ]);
 
-            let style = if installed {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            ListItem::new(line).style(style)
+            ListItem::new(line)
         })
         .collect();
 
     let app_list = List::new(items)
-        .block(
-            Block::default()
-                .title(" TUI Catalog ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(32, 57, 84))
+                .fg(c_text)
+                .add_modifier(Modifier::BOLD),
         )
-        .highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ")
+        .highlight_symbol(">> ")
         .repeat_highlight_symbol(true);
 
-    frame.render_stateful_widget(app_list, vertical[3], &mut app.list_state);
+    frame.render_stateful_widget(app_list, left_chunks[1], &mut app.list_state);
 
-    let details = if let Some(entry) = app.current_entry() {
+    let details_block = Block::default()
+        .title(" Details ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(c_panel))
+        .style(Style::default().bg(c_bg));
+    let details_inner = details_block.inner(body[1]);
+    frame.render_widget(details_block, body[1]);
+
+    let details_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(4)])
+        .split(details_inner);
+
+    let details_lines = if let Some(entry) = app.current_entry() {
         let install_cmd = command_for_platform(&entry.install, app.platform);
         let uninstall_cmd = command_for_platform(&entry.uninstall, app.platform);
-        let installed = if is_installed(entry) { "yes" } else { "no" };
+        let installed = app.is_installed(entry);
 
-        format!(
-            "name: {}\ncategory: {}\ninstalled: {}\nbinary: {}\nrepo: {}\ninstall: {}\nuninstall: {}",
-            entry.name,
-            entry.category,
-            installed,
-            entry.binary,
-            entry.repo,
-            install_cmd,
-            uninstall_cmd
-        )
+        vec![
+            Line::from(vec![
+                Span::styled("Name: ", Style::default().fg(c_muted)),
+                Span::styled(entry.name.clone(), Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("ID: ", Style::default().fg(c_muted)),
+                Span::styled(entry.id.clone(), Style::default().fg(c_text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Category: ", Style::default().fg(c_muted)),
+                Span::styled(entry.category.clone(), Style::default().fg(c_text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Installed: ", Style::default().fg(c_muted)),
+                Span::styled(
+                    if installed { "yes" } else { "no" },
+                    Style::default().fg(if installed { c_success } else { c_warning }),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Binary: ", Style::default().fg(c_muted)),
+                Span::styled(entry.binary.clone(), Style::default().fg(c_text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Repo: ", Style::default().fg(c_muted)),
+                Span::styled(entry.repo.clone(), Style::default().fg(c_primary)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Install: ", Style::default().fg(c_muted)),
+                Span::styled(install_cmd.to_string(), Style::default().fg(c_text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Uninstall: ", Style::default().fg(c_muted)),
+                Span::styled(uninstall_cmd.to_string(), Style::default().fg(c_text)),
+            ]),
+        ]
     } else {
-        "No apps match this filter/search.".to_string()
+        vec![Line::from(Span::styled(
+            "No apps match the current tab/filter/search.",
+            Style::default().fg(c_muted),
+        ))]
     };
 
-    let details_widget = Paragraph::new(details)
-        .block(
-            Block::default()
-                .title(" Details ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
-        )
-        .wrap(Wrap { trim: true });
-    frame.render_widget(details_widget, vertical[4]);
+    let details_widget = Paragraph::new(details_lines).wrap(Wrap { trim: true });
+    frame.render_widget(details_widget, details_chunks[0]);
 
-    let status = Paragraph::new(app.status.as_str())
-        .style(Style::default().fg(Color::Cyan))
-        .block(Block::default().borders(Borders::TOP));
-    frame.render_widget(status, vertical[5]);
+    let command_panel = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Install ", Style::default().fg(c_muted)),
+            Span::styled("[I]", Style::default().fg(c_success).add_modifier(Modifier::BOLD)),
+            Span::styled("  Launch ", Style::default().fg(c_muted)),
+            Span::styled("[L]", Style::default().fg(c_primary).add_modifier(Modifier::BOLD)),
+            Span::styled("  Remove ", Style::default().fg(c_muted)),
+            Span::styled("[U]", Style::default().fg(c_warning).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("Select ", Style::default().fg(c_muted)),
+            Span::styled("[Space]", Style::default().fg(c_text)),
+            Span::styled("  Clear ", Style::default().fg(c_muted)),
+            Span::styled("[C]", Style::default().fg(c_text)),
+            Span::styled("  Search ", Style::default().fg(c_muted)),
+            Span::styled("[/]", Style::default().fg(c_text)),
+        ]),
+    ])
+    .block(
+        Block::default()
+            .title(" Actions ")
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(c_panel)),
+    );
+    frame.render_widget(command_panel, details_chunks[1]);
 
-    let help = Paragraph::new(
-        "q quit | Tab/Shift+Tab tabs | ←/→ categories | ↑/↓ or j/k move | Space select | / search | I install | L launch | U uninstall",
-    )
-    .style(Style::default().fg(Color::Yellow))
-    .block(Block::default().borders(Borders::TOP));
-    frame.render_widget(help, vertical[6]);
+    let installed_total = app.installed_ids.len();
+    let selected_total = app.selected_ids.len();
+    let visible_total = app.filtered_indices.len();
+
+    let footer_lines = vec![
+        Line::from(vec![
+            Span::styled("Move ", Style::default().fg(c_muted)),
+            Span::styled("↑/↓ j/k", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled("  Tabs ", Style::default().fg(c_muted)),
+            Span::styled("Tab/Shift+Tab", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled("  Category ", Style::default().fg(c_muted)),
+            Span::styled("←/→", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled("  Search ", Style::default().fg(c_muted)),
+            Span::styled("/", Style::default().fg(c_primary).add_modifier(Modifier::BOLD)),
+            Span::styled("  Select ", Style::default().fg(c_muted)),
+            Span::styled("Space", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled("  Clear ", Style::default().fg(c_muted)),
+            Span::styled("C", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled("  Quit ", Style::default().fg(c_muted)),
+            Span::styled("Q", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("Actions ", Style::default().fg(c_muted)),
+            Span::styled("I Install", Style::default().fg(c_success).add_modifier(Modifier::BOLD)),
+            Span::styled("  ", Style::default()),
+            Span::styled("L Launch", Style::default().fg(c_primary).add_modifier(Modifier::BOLD)),
+            Span::styled("  ", Style::default()),
+            Span::styled("U Uninstall", Style::default().fg(c_warning).add_modifier(Modifier::BOLD)),
+            Span::styled("   |   ", Style::default().fg(c_panel)),
+            Span::styled(
+                format!("visible:{} selected:{} installed:{} [{}]", visible_total, selected_total, installed_total, platform_label(app.platform)),
+                Style::default().fg(c_muted),
+            ),
+        ]),
+    ];
+    let footer = Paragraph::new(footer_lines).block(
+        Block::default()
+            .title(" Command Bar ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(c_panel)),
+    );
+    frame.render_widget(footer, vertical[4]);
 
     if app.search_mode {
         let cursor_x = vertical[2].x + 1 + app.search_input.chars().count() as u16;
@@ -607,8 +785,15 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                 KeyCode::Char(' ') => app.toggle_selected_current(),
                 KeyCode::Char('/') => {
                     app.search_mode = true;
-                    app.search_input.clear();
                 }
+                KeyCode::Esc => {
+                    if !app.search_input.is_empty() {
+                        app.search_input.clear();
+                        app.refresh_filter();
+                        app.set_status("Search cleared.");
+                    }
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => app.clear_selection(),
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     let targets = app.selected_entries();
                     if targets.is_empty() {
@@ -634,6 +819,7 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                             Err(e) => app.set_status(format!("Install failed for {}: {}", target.name, e)),
                         }
                     }
+                    app.refresh_installed_cache();
                     app.refresh_filter();
                 }
                 KeyCode::Char('u') | KeyCode::Char('U') => {
@@ -661,6 +847,7 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                             Err(e) => app.set_status(format!("Uninstall failed for {}: {}", target.name, e)),
                         }
                     }
+                    app.refresh_installed_cache();
                     app.refresh_filter();
                 }
                 KeyCode::Char('l') | KeyCode::Char('L') => {
@@ -671,7 +858,7 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     }
 
                     for target in targets {
-                        if !is_installed(&target) {
+                        if !app.is_installed(&target) {
                             app.set_status(format!("{} is not installed yet. Install first.", target.name));
                             continue;
                         }
