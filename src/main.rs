@@ -54,6 +54,7 @@ enum Platform {
     Wsl,
     Mac,
     Windows,
+    Unknown,
 }
 
 impl Platform {
@@ -67,7 +68,20 @@ impl Platform {
         if is_wsl() {
             return Self::Wsl;
         }
-        Self::Linux
+        if cfg!(target_os = "linux") {
+            return Self::Linux;
+        }
+        Self::Unknown
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Platform::Linux => "Linux",
+            Platform::Wsl => "WSL",
+            Platform::Mac => "macOS",
+            Platform::Windows => "Windows",
+            Platform::Unknown => "Unknown",
+        }
     }
 }
 
@@ -96,6 +110,29 @@ struct App {
     search_input: String,
     status: String,
     platform: Platform,
+    confirm_mode: bool,
+    confirm_action: Option<ConfirmAction>,
+    confirm_selected: bool,
+    logs: Vec<LogEntry>,
+}
+
+#[derive(Clone)]
+enum ConfirmAction {
+    Uninstall(Vec<AppEntry>),
+}
+
+#[derive(Clone)]
+struct LogEntry {
+    message: String,
+    level: LogLevel,
+    created_at: std::time::Instant,
+}
+
+#[derive(Clone, Copy)]
+enum LogLevel {
+    Success,
+    Error,
+    Info,
 }
 
 impl App {
@@ -124,10 +161,28 @@ impl App {
             status: "Ready. Navigate with arrows/jk. Space select, I install, L launch, / search."
                 .to_string(),
             platform: Platform::detect(),
+            confirm_mode: false,
+            confirm_action: None,
+            confirm_selected: false,
+            logs: Vec::new(),
         };
         app.refresh_installed_cache();
         app.refresh_filter();
         app
+    }
+
+    fn log(&mut self, message: String, level: LogLevel) {
+        let now = std::time::Instant::now();
+        self.logs
+            .retain(|l| now.duration_since(l.created_at) < std::time::Duration::from_secs(3));
+        self.logs.push(LogEntry {
+            message,
+            level,
+            created_at: now,
+        });
+        if self.logs.len() > 3 {
+            self.logs.remove(0);
+        }
     }
 
     fn refresh_installed_cache(&mut self) {
@@ -289,12 +344,18 @@ impl App {
     }
 }
 
-fn command_for_platform(commands: &InstallCommands, platform: Platform) -> &str {
-    match platform {
+fn command_for_platform(commands: &InstallCommands, platform: Platform) -> Option<&str> {
+    let cmd = match platform {
         Platform::Linux => &commands.linux,
         Platform::Wsl => &commands.wsl,
         Platform::Mac => &commands.mac,
         Platform::Windows => &commands.windows,
+        Platform::Unknown => return None,
+    };
+    if cmd.trim().is_empty() {
+        None
+    } else {
+        Some(cmd)
     }
 }
 
@@ -324,6 +385,7 @@ fn tmux_install_hint(platform: Platform) -> &'static str {
         Platform::Linux | Platform::Wsl => "Install tmux: sudo apt install tmux",
         Platform::Mac => "Install tmux: brew install tmux",
         Platform::Windows => "Install tmux in WSL, then run TUIHub inside WSL terminal.",
+        Platform::Unknown => "Install tmux for your platform.",
     }
 }
 
@@ -350,6 +412,7 @@ fn platform_label(platform: Platform) -> &'static str {
         Platform::Wsl => "WSL",
         Platform::Mac => "macOS",
         Platform::Windows => "Windows",
+        Platform::Unknown => "Unknown",
     }
 }
 
@@ -604,15 +667,17 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
     let details_inner = details_block.inner(body[1]);
     frame.render_widget(details_block, body[1]);
 
-    let details_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(4)])
-        .split(details_inner);
-
     let details_lines = if let Some(entry) = app.current_entry() {
         let install_cmd = command_for_platform(&entry.install, app.platform);
         let uninstall_cmd = command_for_platform(&entry.uninstall, app.platform);
         let installed = app.is_installed(entry);
+
+        let install_display = install_cmd
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+        let uninstall_display = uninstall_cmd
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
 
         vec![
             Line::from(vec![
@@ -629,6 +694,10 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
             Line::from(vec![
                 Span::styled("Category: ", Style::default().fg(c_muted)),
                 Span::styled(entry.category.clone(), Style::default().fg(c_text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Platform: ", Style::default().fg(c_muted)),
+                Span::styled(app.platform.label(), Style::default().fg(c_text)),
             ]),
             Line::from(vec![
                 Span::styled("Installed: ", Style::default().fg(c_muted)),
@@ -648,11 +717,11 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
             Line::from(""),
             Line::from(vec![
                 Span::styled("Install: ", Style::default().fg(c_muted)),
-                Span::styled(install_cmd.to_string(), Style::default().fg(c_text)),
+                Span::styled(install_display, Style::default().fg(c_text)),
             ]),
             Line::from(vec![
                 Span::styled("Uninstall: ", Style::default().fg(c_muted)),
-                Span::styled(uninstall_cmd.to_string(), Style::default().fg(c_text)),
+                Span::styled(uninstall_display, Style::default().fg(c_text)),
             ]),
         ]
     } else {
@@ -663,46 +732,78 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
     };
 
     let details_widget = Paragraph::new(details_lines).wrap(Wrap { trim: true });
-    frame.render_widget(details_widget, details_chunks[0]);
+    frame.render_widget(details_widget, details_inner);
 
-    let command_panel = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("Install ", Style::default().fg(c_muted)),
-            Span::styled(
-                "[I]",
-                Style::default().fg(c_success).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  Launch ", Style::default().fg(c_muted)),
-            Span::styled(
-                "[L]",
-                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  Remove ", Style::default().fg(c_muted)),
-            Span::styled(
-                "[U]",
-                Style::default().fg(c_warning).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Select ", Style::default().fg(c_muted)),
-            Span::styled("[Space]", Style::default().fg(c_text)),
-            Span::styled("  Clear ", Style::default().fg(c_muted)),
-            Span::styled("[C]", Style::default().fg(c_text)),
-            Span::styled("  Search ", Style::default().fg(c_muted)),
-            Span::styled("[/]", Style::default().fg(c_text)),
-        ]),
-    ])
-    .block(
-        Block::default()
-            .title(" Actions ")
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(c_panel)),
+    let tip_line = Line::from(Span::styled(
+        "Tip: Press q in tmux to return",
+        Style::default().fg(c_muted).add_modifier(Modifier::ITALIC),
+    ));
+    let tip_widget = Paragraph::new(tip_line)
+        .style(Style::default().fg(c_muted))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(c_panel)),
+        );
+    let tip_area = Rect::new(
+        details_inner.x,
+        details_inner.y + details_inner.height.saturating_sub(1),
+        details_inner.x + details_inner.width,
+        details_inner.y + details_inner.height,
     );
-    frame.render_widget(command_panel, details_chunks[1]);
+    frame.render_widget(tip_widget, tip_area);
+
+    let now = std::time::Instant::now();
+    app.logs
+        .retain(|l| now.duration_since(l.created_at) < std::time::Duration::from_secs(3));
 
     let installed_total = app.installed_ids.len();
     let selected_total = app.selected_ids.len();
     let visible_total = app.filtered_indices.len();
+
+    let mut second_line: Vec<Span> = vec![
+        Span::styled("Actions ", Style::default().fg(c_muted)),
+        Span::styled(
+            "Enter Quick Launch",
+            Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            "I Install",
+            Style::default().fg(c_success).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            "L Launch",
+            Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            "U Uninstall",
+            Style::default().fg(c_warning).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   |   ", Style::default().fg(c_panel)),
+        Span::styled(
+            format!(
+                "visible:{} selected:{} installed:{} [{}]",
+                visible_total,
+                selected_total,
+                installed_total,
+                platform_label(app.platform)
+            ),
+            Style::default().fg(c_muted),
+        ),
+    ];
+
+    for l in &app.logs {
+        let color = match l.level {
+            LogLevel::Success => c_success,
+            LogLevel::Error => c_warning,
+            LogLevel::Info => c_primary,
+        };
+        second_line.push(Span::styled("  ", Style::default()));
+        second_line.push(Span::styled(l.message.clone(), Style::default().fg(color)));
+    }
 
     let footer_lines = vec![
         Line::from(vec![
@@ -742,39 +843,7 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
                 Style::default().fg(c_text).add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("Actions ", Style::default().fg(c_muted)),
-            Span::styled(
-                "Enter Quick Launch",
-                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                "I Install",
-                Style::default().fg(c_success).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                "L Launch",
-                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                "U Uninstall",
-                Style::default().fg(c_warning).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("   |   ", Style::default().fg(c_panel)),
-            Span::styled(
-                format!(
-                    "visible:{} selected:{} installed:{} [{}]",
-                    visible_total,
-                    selected_total,
-                    installed_total,
-                    platform_label(app.platform)
-                ),
-                Style::default().fg(c_muted),
-            ),
-        ]),
+        Line::from(second_line),
     ];
     let footer = Paragraph::new(footer_lines).block(
         Block::default()
@@ -784,6 +853,67 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
             .border_style(Style::default().fg(c_panel)),
     );
     frame.render_widget(footer, vertical[4]);
+
+    if app.confirm_mode {
+        let area = centered_rect(50, 25, frame.area());
+        frame.render_widget(Clear, area);
+
+        let msg = if let Some(ConfirmAction::Uninstall(ref targets)) = app.confirm_action {
+            let names = targets
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Are you sure you want to uninstall:\n{}?", names)
+        } else {
+            "Confirm action?".to_string()
+        };
+
+        let block = Paragraph::new(msg)
+            .style(Style::default().fg(c_text))
+            .wrap(Wrap { trim: true })
+            .alignment(ratatui::prelude::Alignment::Center)
+            .block(
+                Block::default()
+                    .title(" Confirm Uninstall ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(c_panel)),
+            );
+        frame.render_widget(block, area);
+
+        let btn_area = Rect::new(
+            area.x + 2,
+            area.y + area.height - 3,
+            area.x + area.width - 2,
+            area.y + area.height - 1,
+        );
+
+        let yes_style = if app.confirm_selected {
+            Style::default()
+                .fg(c_bg)
+                .bg(c_success)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(c_success).add_modifier(Modifier::BOLD)
+        };
+        let no_style = if !app.confirm_selected {
+            Style::default()
+                .fg(c_bg)
+                .bg(c_warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(c_warning).add_modifier(Modifier::BOLD)
+        };
+
+        let btns = Paragraph::new(vec![Line::from(vec![
+            Span::styled("[ Yes ] ", yes_style),
+            Span::styled("[ No ] ", no_style),
+        ])
+        .alignment(ratatui::prelude::Alignment::Center)])
+        .block(Block::default().borders(Borders::NONE));
+        frame.render_widget(btns, btn_area);
+    }
 
     if app.search_mode {
         let cursor_x = vertical[2].x + 1 + app.search_input.chars().count() as u16;
@@ -887,6 +1017,83 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                 continue;
             }
 
+            if app.confirm_mode {
+                match key.code {
+                    KeyCode::Enter => {
+                        if app.confirm_selected {
+                            if let Some(ConfirmAction::Uninstall(targets)) =
+                                app.confirm_action.clone()
+                            {
+                                app.confirm_mode = false;
+                                app.confirm_action = None;
+
+                                for target in targets {
+                                    let uninstall_cmd =
+                                        match command_for_platform(&target.uninstall, app.platform)
+                                        {
+                                            Some(cmd) => cmd.to_string(),
+                                            None => continue,
+                                        };
+                                    app.set_status(format!(
+                                        "Uninstalling {} using: {}",
+                                        target.name, uninstall_cmd
+                                    ));
+
+                                    let message = format!(
+                                        "About to run uninstall command for {}.\n\nCommand:\n{}\n\nIf sudo asks for password, type normally.",
+                                        target.name, uninstall_cmd
+                                    );
+
+                                    let result =
+                                        suspend_tui_for_command(terminal, &message, || {
+                                            run_install_cmd(&uninstall_cmd, app.platform)
+                                        });
+
+                                    match result {
+                                        Ok(_) => {
+                                            app.log(
+                                                format!("Uninstalled {}", target.name),
+                                                LogLevel::Success,
+                                            );
+                                            app.set_status(format!(
+                                                "Uninstalled {} successfully.",
+                                                target.name
+                                            ))
+                                        }
+                                        Err(e) => {
+                                            app.log(format!("Error: {}", e), LogLevel::Error);
+                                            app.set_status(format!(
+                                                "Uninstall failed for {}: {}",
+                                                target.name, e
+                                            ))
+                                        }
+                                    }
+                                }
+                                app.refresh_installed_cache();
+                                app.refresh_filter();
+                            }
+                        } else {
+                            app.confirm_mode = false;
+                            app.confirm_action = None;
+                            app.set_status("Uninstall cancelled.");
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        app.confirm_selected = true;
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        app.confirm_selected = false;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        app.confirm_mode = false;
+                        app.confirm_action = None;
+                        app.set_status("Uninstall cancelled.");
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             match key.code {
                 KeyCode::Char('q') => break,
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
@@ -931,6 +1138,8 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                         }
                     };
 
+                    let target_name = target.name.clone();
+
                     if !has_tmux() {
                         app.set_status(format!(
                             "tmux is required for launch. {}",
@@ -942,7 +1151,7 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     if !app.is_installed(&target) {
                         app.set_status(format!(
                             "{} is not installed. Press I to install.",
-                            target.name
+                            target_name
                         ));
                         continue;
                     }
@@ -950,21 +1159,28 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     match launch_in_tmux(&target) {
                         Ok(target_loc) => {
                             if let Some(session_name) = target_loc.strip_prefix("session:") {
+                                app.log(
+                                    format!("Session '{}' opened", session_name),
+                                    LogLevel::Info,
+                                );
                                 app.set_status(format!(
                                     "Launched {} in tmux session '{}'. Attach: tmux attach -t {}",
-                                    target.name, session_name, session_name
+                                    target_name, session_name, session_name
                                 ));
                             } else if let Some(window_name) = target_loc.strip_prefix("window:") {
+                                app.log(format!("Window '{}' opened", window_name), LogLevel::Info);
                                 app.set_status(format!(
                                     "Launched {} in tmux window '{}'.",
-                                    target.name, window_name
+                                    target_name, window_name
                                 ));
                             } else {
-                                app.set_status(format!("Launched {} in tmux.", target.name));
+                                app.log(format!("Launched {}", target_name), LogLevel::Info);
+                                app.set_status(format!("Launched {} in tmux.", target_name));
                             }
                         }
                         Err(e) => {
-                            app.set_status(format!("Launch failed for {}: {}", target.name, e))
+                            app.log(format!("Error: {}", e), LogLevel::Error);
+                            app.set_status(format!("Launch failed for {}: {}", target_name, e))
                         }
                     }
                 }
@@ -975,9 +1191,30 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                         continue;
                     }
 
+                    if app.platform == Platform::Unknown {
+                        app.set_status("Unknown platform. Cannot install.");
+                        continue;
+                    }
+
                     for target in targets {
-                        let install_cmd =
-                            command_for_platform(&target.install, app.platform).to_string();
+                        if app.is_installed(&target) {
+                            app.set_status(format!("{} already installed", target.name));
+                            app.log(format!("{} already installed", target.name), LogLevel::Info);
+                            continue;
+                        }
+
+                        let install_cmd = match command_for_platform(&target.install, app.platform)
+                        {
+                            Some(cmd) if !cmd.trim().is_empty() => cmd.to_string(),
+                            _ => {
+                                app.set_status(format!(
+                                    "No install command defined for {} on {}.",
+                                    target.name,
+                                    app.platform.label()
+                                ));
+                                continue;
+                            }
+                        };
                         app.set_status(format!(
                             "Installing {} using: {}",
                             target.name, install_cmd
@@ -994,9 +1231,11 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
 
                         match result {
                             Ok(_) => {
+                                app.log(format!("Installed {}", target.name), LogLevel::Success);
                                 app.set_status(format!("Installed {} successfully.", target.name))
                             }
                             Err(e) => {
+                                app.log(format!("Error: {}", e), LogLevel::Error);
                                 app.set_status(format!("Install failed for {}: {}", target.name, e))
                             }
                         }
@@ -1011,33 +1250,49 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                         continue;
                     }
 
-                    for target in targets {
-                        let uninstall_cmd =
-                            command_for_platform(&target.uninstall, app.platform).to_string();
-                        app.set_status(format!(
-                            "Uninstalling {} using: {}",
-                            target.name, uninstall_cmd
-                        ));
-
-                        let message = format!(
-                            "About to run uninstall command for {}.\n\nCommand:\n{}\n\nIf sudo asks for password, type normally.",
-                            target.name, uninstall_cmd
-                        );
-
-                        let result = suspend_tui_for_command(terminal, &message, || {
-                            run_install_cmd(&uninstall_cmd, app.platform)
-                        });
-
-                        match result {
-                            Ok(_) => {
-                                app.set_status(format!("Uninstalled {} successfully.", target.name))
-                            }
-                            Err(e) => app
-                                .set_status(format!("Uninstall failed for {}: {}", target.name, e)),
-                        }
+                    if app.platform == Platform::Unknown {
+                        app.set_status("Unknown platform. Cannot uninstall.");
+                        continue;
                     }
-                    app.refresh_installed_cache();
-                    app.refresh_filter();
+
+                    let installed_targets: Vec<_> = targets
+                        .iter()
+                        .filter(|target| app.is_installed(target))
+                        .filter(|target| {
+                            if let Some(cmd) = command_for_platform(&target.uninstall, app.platform)
+                            {
+                                !cmd.trim().is_empty()
+                            } else {
+                                false
+                            }
+                        })
+                        .cloned()
+                        .collect();
+
+                    if installed_targets.is_empty() {
+                        let not_installed: Vec<_> = targets
+                            .iter()
+                            .filter(|t| !app.is_installed(t))
+                            .map(|t| t.name.clone())
+                            .collect();
+                        if !not_installed.is_empty() {
+                            app.set_status(format!("{} not installed.", not_installed.join(", ")));
+                            app.log(
+                                format!("{} not installed", not_installed.join(", ")),
+                                LogLevel::Info,
+                            );
+                        } else {
+                            app.set_status(
+                                "No uninstall command defined for selected apps on this platform.",
+                            );
+                        }
+                        continue;
+                    }
+
+                    app.confirm_mode = true;
+                    app.confirm_selected = true;
+                    app.confirm_action = Some(ConfirmAction::Uninstall(installed_targets));
+                    app.set_status("Press Enter to confirm uninstall, Esc to cancel.");
                 }
                 KeyCode::Char('l') | KeyCode::Char('L') => {
                     let targets: Vec<AppEntry> = if app.selected_ids.is_empty() {
@@ -1069,33 +1324,45 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     }
 
                     for target in targets {
+                        let target_name = target.name.clone();
                         if !app.is_installed(&target) {
                             app.set_status(format!(
                                 "{} is not installed yet. Install first.",
-                                target.name
+                                target_name
                             ));
+                            app.log(format!("{} not installed", target_name), LogLevel::Info);
                             continue;
                         }
 
                         match launch_in_tmux(&target) {
                             Ok(target_loc) => {
                                 if let Some(session_name) = target_loc.strip_prefix("session:") {
+                                    app.log(
+                                        format!("Session '{}' opened", session_name),
+                                        LogLevel::Info,
+                                    );
                                     app.set_status(format!(
                                         "Launched {} in tmux session '{}'. Attach: tmux attach -t {}",
-                                        target.name, session_name, session_name
+                                        target_name, session_name, session_name
                                     ));
                                 } else if let Some(window_name) = target_loc.strip_prefix("window:")
                                 {
+                                    app.log(
+                                        format!("Window '{}' opened", window_name),
+                                        LogLevel::Info,
+                                    );
                                     app.set_status(format!(
                                         "Launched {} in tmux window '{}'.",
-                                        target.name, window_name
+                                        target_name, window_name
                                     ));
                                 } else {
-                                    app.set_status(format!("Launched {} in tmux.", target.name));
+                                    app.log(format!("Launched {}", target_name), LogLevel::Info);
+                                    app.set_status(format!("Launched {} in tmux.", target_name));
                                 }
                             }
                             Err(e) => {
-                                app.set_status(format!("Launch failed for {}: {}", target.name, e))
+                                app.log(format!("Error: {}", e), LogLevel::Error);
+                                app.set_status(format!("Launch failed for {}: {}", target_name, e))
                             }
                         }
                     }
