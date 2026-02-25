@@ -18,7 +18,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
     style::{Color, Modifier, Style},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap,
+    },
     Frame, Terminal,
 };
 use serde::Deserialize;
@@ -119,7 +121,8 @@ impl App {
             selected_ids: HashSet::new(),
             search_mode: false,
             search_input: String::new(),
-            status: "Ready. Navigate with arrows/jk. Space select, I install, L launch, / search.".to_string(),
+            status: "Ready. Navigate with arrows/jk. Space select, I install, L launch, / search."
+                .to_string(),
             platform: Platform::detect(),
         };
         app.refresh_installed_cache();
@@ -306,6 +309,41 @@ fn is_binary_installed(binary: &str) -> bool {
     which(binary).is_ok()
 }
 
+fn has_tmux() -> bool {
+    which("tmux").is_ok()
+}
+
+fn in_tmux_session() -> bool {
+    std::env::var("TMUX")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn tmux_install_hint(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Linux | Platform::Wsl => "Install tmux: sudo apt install tmux",
+        Platform::Mac => "Install tmux: brew install tmux",
+        Platform::Windows => "Install tmux in WSL, then run TUIHub inside WSL terminal.",
+    }
+}
+
+fn sanitize_tmux_name(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "app".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn platform_label(platform: Platform) -> &'static str {
     match platform {
         Platform::Linux => "Linux",
@@ -360,20 +398,25 @@ fn run_install_cmd(cmd: &str, platform: Platform) -> Result<()> {
 }
 
 fn launch_in_tmux(entry: &AppEntry) -> Result<String> {
-    which("tmux").context("tmux is not installed or not in PATH")?;
-
     let timestamp = Utc::now().timestamp();
-    let mut session_name = format!("tuihub-{}-{timestamp}", entry.id);
-    session_name = session_name.replace(' ', "-");
+    let safe_name = sanitize_tmux_name(&entry.id);
 
+    if in_tmux_session() {
+        let window_name = format!("th-{safe_name}-{timestamp}");
+        let status = Command::new("tmux")
+            .args(["new-window", "-n", &window_name, &entry.binary])
+            .status()
+            .context("failed to create tmux window")?;
+
+        if !status.success() {
+            anyhow::bail!("failed to create tmux window (status: {status})");
+        }
+        return Ok(format!("window:{window_name}"));
+    }
+
+    let session_name = format!("tuihub-{safe_name}-{timestamp}");
     let status = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            &session_name,
-            &format!("{}", entry.binary),
-        ])
+        .args(["new-session", "-d", "-s", &session_name, &entry.binary])
         .status()
         .context("failed to create tmux session")?;
 
@@ -381,7 +424,7 @@ fn launch_in_tmux(entry: &AppEntry) -> Result<String> {
         anyhow::bail!("failed to create tmux session (status: {status})");
     }
 
-    Ok(session_name)
+    Ok(format!("session:{session_name}"))
 }
 
 fn ui(frame: &mut Frame<'_>, app: &mut App) {
@@ -393,7 +436,10 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
     let c_success = Color::Rgb(112, 220, 142);
     let c_warning = Color::Rgb(255, 210, 110);
 
-    frame.render_widget(Block::default().style(Style::default().bg(c_bg)), frame.area());
+    frame.render_widget(
+        Block::default().style(Style::default().bg(c_bg)),
+        frame.area(),
+    );
 
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -406,7 +452,10 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
         ])
         .split(frame.area());
 
-    let tab_titles = TABS.iter().map(|title| Line::from(*title)).collect::<Vec<_>>();
+    let tab_titles = TABS
+        .iter()
+        .map(|title| Line::from(*title))
+        .collect::<Vec<_>>();
     let tabs = Tabs::new(tab_titles)
         .select(app.selected_tab)
         .block(
@@ -463,7 +512,11 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
                 .title(search_title)
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(if app.search_mode { c_primary } else { c_panel })),
+                .border_style(Style::default().fg(if app.search_mode {
+                    c_primary
+                } else {
+                    c_panel
+                })),
         )
         .style(if app.search_mode {
             Style::default().fg(c_text)
@@ -492,8 +545,9 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
         .constraints([Constraint::Length(1), Constraint::Min(4)])
         .split(catalog_inner);
 
-    let header_line = Paragraph::new("Sel  Name                 Category        State       Description")
-        .style(Style::default().fg(c_muted).add_modifier(Modifier::BOLD));
+    let header_line =
+        Paragraph::new("Sel  Name                 Category        State       Description")
+            .style(Style::default().fg(c_muted).add_modifier(Modifier::BOLD));
     frame.render_widget(header_line, left_chunks[0]);
 
     let list_width = left_chunks[1].width as usize;
@@ -514,7 +568,10 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
             let line = Line::from(vec![
                 Span::styled(format!("{:<4}", checkbox), Style::default().fg(c_primary)),
                 Span::styled(format!("{:<21}", display_name), Style::default().fg(c_text)),
-                Span::styled(format!("{:<16}", display_category), Style::default().fg(c_muted)),
+                Span::styled(
+                    format!("{:<16}", display_category),
+                    Style::default().fg(c_muted),
+                ),
                 Span::styled(
                     format!("{:<11}", install_badge),
                     Style::default().fg(if installed { c_success } else { c_warning }),
@@ -560,7 +617,10 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
         vec![
             Line::from(vec![
                 Span::styled("Name: ", Style::default().fg(c_muted)),
-                Span::styled(entry.name.clone(), Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    entry.name.clone(),
+                    Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("ID: ", Style::default().fg(c_muted)),
@@ -608,11 +668,20 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
     let command_panel = Paragraph::new(vec![
         Line::from(vec![
             Span::styled("Install ", Style::default().fg(c_muted)),
-            Span::styled("[I]", Style::default().fg(c_success).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[I]",
+                Style::default().fg(c_success).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Launch ", Style::default().fg(c_muted)),
-            Span::styled("[L]", Style::default().fg(c_primary).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[L]",
+                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Remove ", Style::default().fg(c_muted)),
-            Span::styled("[U]", Style::default().fg(c_warning).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[U]",
+                Style::default().fg(c_warning).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Select ", Style::default().fg(c_muted)),
@@ -638,30 +707,71 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
     let footer_lines = vec![
         Line::from(vec![
             Span::styled("Move ", Style::default().fg(c_muted)),
-            Span::styled("↑/↓ j/k", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "↑/↓ j/k",
+                Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Tabs ", Style::default().fg(c_muted)),
-            Span::styled("Tab/Shift+Tab", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Tab/Shift+Tab",
+                Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Category ", Style::default().fg(c_muted)),
-            Span::styled("←/→", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "←/→",
+                Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Search ", Style::default().fg(c_muted)),
-            Span::styled("/", Style::default().fg(c_primary).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "/",
+                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Select ", Style::default().fg(c_muted)),
-            Span::styled("Space", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Space",
+                Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Clear ", Style::default().fg(c_muted)),
-            Span::styled("C", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "C",
+                Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  Quit ", Style::default().fg(c_muted)),
-            Span::styled("Q", Style::default().fg(c_text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Q",
+                Style::default().fg(c_text).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Actions ", Style::default().fg(c_muted)),
-            Span::styled("I Install", Style::default().fg(c_success).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Enter Quick Launch",
+                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  ", Style::default()),
-            Span::styled("L Launch", Style::default().fg(c_primary).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "I Install",
+                Style::default().fg(c_success).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  ", Style::default()),
-            Span::styled("U Uninstall", Style::default().fg(c_warning).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "L Launch",
+                Style::default().fg(c_primary).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                "U Uninstall",
+                Style::default().fg(c_warning).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("   |   ", Style::default().fg(c_panel)),
             Span::styled(
-                format!("visible:{} selected:{} installed:{} [{}]", visible_total, selected_total, installed_total, platform_label(app.platform)),
+                format!(
+                    "visible:{} selected:{} installed:{} [{}]",
+                    visible_total,
+                    selected_total,
+                    installed_total,
+                    platform_label(app.platform)
+                ),
                 Style::default().fg(c_muted),
             ),
         ]),
@@ -682,7 +792,10 @@ fn ui(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-fn show_transient_message(terminal: &mut Terminal<CrosstermBackend<Stdout>>, msg: &str) -> Result<()> {
+fn show_transient_message(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    msg: &str,
+) -> Result<()> {
     terminal.draw(|frame| {
         let area = centered_rect(70, 20, frame.area());
         frame.render_widget(Clear, area);
@@ -776,6 +889,7 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
 
             match key.code {
                 KeyCode::Char('q') => break,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Tab => app.cycle_tab_right(),
@@ -794,6 +908,66 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     }
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => app.clear_selection(),
+                KeyCode::Enter | KeyCode::Char('\r') => {
+                    let idx = match app.list_state.selected() {
+                        Some(i) => i,
+                        None => {
+                            app.set_status("No app focused to launch.");
+                            continue;
+                        }
+                    };
+                    let entry_idx = match app.filtered_indices.get(idx) {
+                        Some(&idx) => idx,
+                        None => {
+                            app.set_status("No app focused to launch.");
+                            continue;
+                        }
+                    };
+                    let target = match app.entries.get(entry_idx) {
+                        Some(entry) => entry,
+                        None => {
+                            app.set_status("No app focused to launch.");
+                            continue;
+                        }
+                    };
+
+                    if !has_tmux() {
+                        app.set_status(format!(
+                            "tmux is required for launch. {}",
+                            tmux_install_hint(app.platform)
+                        ));
+                        continue;
+                    }
+
+                    if !app.is_installed(&target) {
+                        app.set_status(format!(
+                            "{} is not installed. Press I to install.",
+                            target.name
+                        ));
+                        continue;
+                    }
+
+                    match launch_in_tmux(&target) {
+                        Ok(target_loc) => {
+                            if let Some(session_name) = target_loc.strip_prefix("session:") {
+                                app.set_status(format!(
+                                    "Launched {} in tmux session '{}'. Attach: tmux attach -t {}",
+                                    target.name, session_name, session_name
+                                ));
+                            } else if let Some(window_name) = target_loc.strip_prefix("window:") {
+                                app.set_status(format!(
+                                    "Launched {} in tmux window '{}'.",
+                                    target.name, window_name
+                                ));
+                            } else {
+                                app.set_status(format!("Launched {} in tmux.", target.name));
+                            }
+                        }
+                        Err(e) => {
+                            app.set_status(format!("Launch failed for {}: {}", target.name, e))
+                        }
+                    }
+                }
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     let targets = app.selected_entries();
                     if targets.is_empty() {
@@ -802,8 +976,12 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     }
 
                     for target in targets {
-                        let install_cmd = command_for_platform(&target.install, app.platform).to_string();
-                        app.set_status(format!("Installing {} using: {}", target.name, install_cmd));
+                        let install_cmd =
+                            command_for_platform(&target.install, app.platform).to_string();
+                        app.set_status(format!(
+                            "Installing {} using: {}",
+                            target.name, install_cmd
+                        ));
 
                         let message = format!(
                             "About to run install command for {}.\n\nCommand:\n{}\n\nIf sudo asks for password, type normally.",
@@ -815,8 +993,12 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                         });
 
                         match result {
-                            Ok(_) => app.set_status(format!("Installed {} successfully.", target.name)),
-                            Err(e) => app.set_status(format!("Install failed for {}: {}", target.name, e)),
+                            Ok(_) => {
+                                app.set_status(format!("Installed {} successfully.", target.name))
+                            }
+                            Err(e) => {
+                                app.set_status(format!("Install failed for {}: {}", target.name, e))
+                            }
                         }
                     }
                     app.refresh_installed_cache();
@@ -830,8 +1012,12 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                     }
 
                     for target in targets {
-                        let uninstall_cmd = command_for_platform(&target.uninstall, app.platform).to_string();
-                        app.set_status(format!("Uninstalling {} using: {}", target.name, uninstall_cmd));
+                        let uninstall_cmd =
+                            command_for_platform(&target.uninstall, app.platform).to_string();
+                        app.set_status(format!(
+                            "Uninstalling {} using: {}",
+                            target.name, uninstall_cmd
+                        ));
 
                         let message = format!(
                             "About to run uninstall command for {}.\n\nCommand:\n{}\n\nIf sudo asks for password, type normally.",
@@ -843,32 +1029,74 @@ fn run(mut app: App, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
                         });
 
                         match result {
-                            Ok(_) => app.set_status(format!("Uninstalled {} successfully.", target.name)),
-                            Err(e) => app.set_status(format!("Uninstall failed for {}: {}", target.name, e)),
+                            Ok(_) => {
+                                app.set_status(format!("Uninstalled {} successfully.", target.name))
+                            }
+                            Err(e) => app
+                                .set_status(format!("Uninstall failed for {}: {}", target.name, e)),
                         }
                     }
                     app.refresh_installed_cache();
                     app.refresh_filter();
                 }
                 KeyCode::Char('l') | KeyCode::Char('L') => {
-                    let targets = app.selected_entries();
+                    let targets: Vec<AppEntry> = if app.selected_ids.is_empty() {
+                        match app.list_state.selected() {
+                            Some(idx) => app
+                                .filtered_indices
+                                .get(idx)
+                                .and_then(|&entry_idx| app.entries.get(entry_idx))
+                                .cloned()
+                                .into_iter()
+                                .collect(),
+                            None => vec![],
+                        }
+                    } else {
+                        app.selected_entries()
+                    };
+
                     if targets.is_empty() {
-                        app.set_status("No app selected to launch.");
+                        app.set_status("No app selected or focused to launch.");
+                        continue;
+                    }
+
+                    if !has_tmux() {
+                        app.set_status(format!(
+                            "tmux is required for launch. {}",
+                            tmux_install_hint(app.platform)
+                        ));
                         continue;
                     }
 
                     for target in targets {
                         if !app.is_installed(&target) {
-                            app.set_status(format!("{} is not installed yet. Install first.", target.name));
+                            app.set_status(format!(
+                                "{} is not installed yet. Install first.",
+                                target.name
+                            ));
                             continue;
                         }
 
                         match launch_in_tmux(&target) {
-                            Ok(session_name) => app.set_status(format!(
-                                "Launched {} in tmux session '{}'. Attach: tmux attach -t {}",
-                                target.name, session_name, session_name
-                            )),
-                            Err(e) => app.set_status(format!("Launch failed for {}: {}", target.name, e)),
+                            Ok(target_loc) => {
+                                if let Some(session_name) = target_loc.strip_prefix("session:") {
+                                    app.set_status(format!(
+                                        "Launched {} in tmux session '{}'. Attach: tmux attach -t {}",
+                                        target.name, session_name, session_name
+                                    ));
+                                } else if let Some(window_name) = target_loc.strip_prefix("window:")
+                                {
+                                    app.set_status(format!(
+                                        "Launched {} in tmux window '{}'.",
+                                        target.name, window_name
+                                    ));
+                                } else {
+                                    app.set_status(format!("Launched {} in tmux.", target.name));
+                                }
+                            }
+                            Err(e) => {
+                                app.set_status(format!("Launch failed for {}: {}", target.name, e))
+                            }
                         }
                     }
                 }
